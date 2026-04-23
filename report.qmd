@@ -316,6 +316,57 @@ summary(modello_q3)
 ```
 
 ```{r}
+dati_standardizzati <- dati_modello_2022 %>%
+  mutate(across(c(poverta, pil, industria, disuguaglianza, spesa_sociale), ~as.numeric(scale(.))))
+
+# 2. Rifacciamo il modello sui dati standardizzati
+modello_std <- lm(poverta ~ pil + industria + disuguaglianza + spesa_sociale, data = dati_standardizzati)
+
+# 3. Estraiamo i coefficienti e calcoliamo l'intervallo di confidenza (95%)
+risultati_df <- as.data.frame(summary(modello_std)$coefficients)
+risultati_df$Variabile <- rownames(risultati_df)
+risultati_df <- risultati_df[-1, ] # Rimuoviamo l'Intercetta (non ci serve nel grafico)
+
+# Rinominiamo le colonne per comodità
+colnames(risultati_df) <- c("Stima", "Errore_Std", "t_value", "p_value", "Variabile")
+
+# Calcoliamo i "baffi" del grafico (Intervallo di confidenza al 95%)
+risultati_df$Limite_Inf <- risultati_df$Stima - (1.96 * risultati_df$Errore_Std)
+risultati_df$Limite_Sup <- risultati_df$Stima + (1.96 * risultati_df$Errore_Std)
+
+# Traduciamo i nomi delle variabili per renderli belli nel grafico
+risultati_df <- risultati_df %>%
+  mutate(Variabile = case_when(
+    Variabile == "pil" ~ "1. PIL pro capite",
+    Variabile == "industria" ~ "2. Peso Industria",
+    Variabile == "disuguaglianza" ~ "3. Disuguaglianza (Gini)",
+    Variabile == "spesa_sociale" ~ "4. Spesa Sociale",
+    TRUE ~ Variabile
+  ))
+
+# 4. Creiamo il Grafico "Forest Plot"
+plot_modello <- ggplot(risultati_df, aes(x = Stima, y = reorder(Variabile, Stima))) +
+  # Disegniamo la linea dello ZERO (La linea spartiacque)
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red", linewidth = 1) +
+  # Disegniamo i "baffi" (Margine di errore)
+  geom_errorbarh(aes(xmin = Limite_Inf, xmax = Limite_Sup), height = 0.2, color = "#56B4E9", linewidth = 1.2) +
+  # Disegniamo il punto dell'effetto stimato
+  geom_point(size = 5, aes(color = p_value < 0.05)) +
+  scale_color_manual(values = c("TRUE" = "#D55E00", "FALSE" = "grey50"), 
+                     name = "Significatività", labels = c("Non Significativo", "Significativo (p < 0.05)")) +
+  theme_minimal() +
+  labs(title = "Impatto dei Fattori Strutturali sul Rischio di Povertà",
+       subtitle = "Coefficienti standardizzati. Se la linea blu tocca lo zero rosso, l'effetto non è certo.",
+       x = "Forza dell'impatto (Verso sinistra: Riduce povertà | Verso destra: Aumenta povertà)",
+       y = "") +
+  theme(plot.title = element_text(face = "bold", size = 14),
+        legend.position = "bottom",
+        axis.text.y = element_text(size = 12, face = "bold"))
+
+print(plot_modello)
+```
+
+```{r}
 #Clustering dei Paesi in base agli indicatori (PIL, Industria, Occupazione, Disuguaglianza, Spesa Sociale, Povertà)
 library(cluster)
 
@@ -378,40 +429,9 @@ print(trend_q2)
 ```
 
 ```{r}
-#Significatività delle relazioni storiche (2012-2022) 
+#test due medie 
 
-significativita_storica_q1 <- indicatori_data %>%
-  filter(geo %in% paesi_target, time >= 2012 & time <= 2022) %>%
-  filter(!is.na(pil) & !is.na(occupazione)) %>%
-  group_by(geo) %>%
-  summarise(
-    correlazione = round(cor.test(pil, occupazione)$estimate, 3),
-    p_value = round(cor.test(pil, occupazione)$p.value, 4)
-  ) %>%
-  mutate(
-    significativo = ifelse(p_value < 0.05, "SI ***", "NO")
-  ) %>%
-  arrange(p_value)
-print("SIGNIFICATIVITA' NEL TEMPO: PIL vs Occupazione (2012-2022)")
-print(significativita_storica_q1)
 
-significativita_storica_q2 <- indicatori_data %>%
-  filter(geo %in% paesi_target, time >= 2012 & time <= 2022) %>%
-  filter(!is.na(occupazione) & !is.na(disuguaglianza)) %>%
-  group_by(geo) %>%
-  summarise(
-    correlazione = round(cor.test(occupazione, disuguaglianza)$estimate, 3),
-    p_value = round(cor.test(occupazione, disuguaglianza)$p.value, 4)
-  ) %>%
-  mutate(
-    significativo = ifelse(p_value < 0.05, "SI ***", "NO")
-  ) %>%
-  arrange(p_value)
-print("SIGNIFICATIVITA' NEL TEMPO: Occupazione vs Disuguaglianza di Reddito (2012-2022)")
-print(significativita_storica_q2)
-#La significatività storica mostra che la relazione tra peso dell'industria e PIL è statisticamente significativa in tutti i Paesi, ma in Francia il coefficiente di correlazione è negativo. Questo conferma che, sebbene ci siano tendenze osservabili, la relazione tra industria e PIL è più complessa e, probabilmente, un'industria avanzata può arricchirsi anche deindustrializzandosi.
-
-#domanda 3  
 ```
 
 
