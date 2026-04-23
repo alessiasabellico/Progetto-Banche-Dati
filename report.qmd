@@ -24,7 +24,6 @@ library(rlang)
 #PIL (Pro capite in Standard di Potere d'Acquisto per confrontabilità)
 pil_data <- get_eurostat("nama_10_pc", time_format = "date") %>%
   filter(na_item == "B1GQ", unit =="CP_PPS_EU27_2020_HAB")
-#Bosnia 12 euro???
 
 # Peso dell'Industria (Valore Aggiunto del Manifatturiero in % sul totale dell'economia)
 industria_data <- get_eurostat("nama_10_a10", time_format = "date") %>%
@@ -319,22 +318,16 @@ summary(modello_q3)
 dati_standardizzati <- dati_modello_2022 %>%
   mutate(across(c(poverta, pil, industria, disuguaglianza, spesa_sociale), ~as.numeric(scale(.))))
 
-# 2. Rifacciamo il modello sui dati standardizzati
 modello_std <- lm(poverta ~ pil + industria + disuguaglianza + spesa_sociale, data = dati_standardizzati)
 
-# 3. Estraiamo i coefficienti e calcoliamo l'intervallo di confidenza (95%)
 risultati_df <- as.data.frame(summary(modello_std)$coefficients)
 risultati_df$Variabile <- rownames(risultati_df)
-risultati_df <- risultati_df[-1, ] # Rimuoviamo l'Intercetta (non ci serve nel grafico)
-
-# Rinominiamo le colonne per comodità
+risultati_df <- risultati_df[-1, ] 
 colnames(risultati_df) <- c("Stima", "Errore_Std", "t_value", "p_value", "Variabile")
 
-# Calcoliamo i "baffi" del grafico (Intervallo di confidenza al 95%)
 risultati_df$Limite_Inf <- risultati_df$Stima - (1.96 * risultati_df$Errore_Std)
 risultati_df$Limite_Sup <- risultati_df$Stima + (1.96 * risultati_df$Errore_Std)
 
-# Traduciamo i nomi delle variabili per renderli belli nel grafico
 risultati_df <- risultati_df %>%
   mutate(Variabile = case_when(
     Variabile == "pil" ~ "1. PIL pro capite",
@@ -344,13 +337,9 @@ risultati_df <- risultati_df %>%
     TRUE ~ Variabile
   ))
 
-# 4. Creiamo il Grafico "Forest Plot"
 plot_modello <- ggplot(risultati_df, aes(x = Stima, y = reorder(Variabile, Stima))) +
-  # Disegniamo la linea dello ZERO (La linea spartiacque)
   geom_vline(xintercept = 0, linetype = "dashed", color = "red", linewidth = 1) +
-  # Disegniamo i "baffi" (Margine di errore)
   geom_errorbarh(aes(xmin = Limite_Inf, xmax = Limite_Sup), height = 0.2, color = "#56B4E9", linewidth = 1.2) +
-  # Disegniamo il punto dell'effetto stimato
   geom_point(size = 5, aes(color = p_value < 0.05)) +
   scale_color_manual(values = c("TRUE" = "#D55E00", "FALSE" = "grey50"), 
                      name = "Significatività", labels = c("Non Significativo", "Significativo (p < 0.05)")) +
@@ -364,16 +353,72 @@ plot_modello <- ggplot(risultati_df, aes(x = Stima, y = reorder(Variabile, Stima
         axis.text.y = element_text(size = 12, face = "bold"))
 
 print(plot_modello)
+
+
+#solo disuguaglianza viene significativo secondo intervalli di confidenza
 ```
 
 ```{r}
 #Clustering dei Paesi in base agli indicatori (PIL, Industria, Occupazione, Disuguaglianza, Spesa Sociale, Povertà)
 library(cluster)
 
+#K-means clustering
+dati_cluster <- dati_2022_stati %>%
+  select(geo, pil, industria, occupazione, disuguaglianza, spesa_sociale, poverta) %>%
+  na.omit()
+
+# Scaliamo solo le colonne numeriche
+dati_scalati <- scale(dati_cluster[,-1]) 
+
+# 2. Esecuzione K-means (proviamo con 3 cluster)
+set.seed(123) # Per rendere i risultati riproducibili
+modello_km <- kmeans(dati_scalati, centers = 3, nstart = 25)
+
+# Aggiungiamo il cluster di appartenenza al dataset originale
+dati_cluster$cluster <- as.factor(modello_km$cluster)
+
+# 3. Analisi dei profili dei cluster (medie dei gruppi)
+profili_cluster <- dati_cluster %>%
+  group_by(cluster) %>%
+  summarise(across(where(is.numeric), mean)) %>%
+  mutate(n_paesi = table(dati_cluster$cluster))
+
+print("--- PROFILI MEDI DEI CLUSTER ---")
+print(profili_cluster)
+
+# 4. Visualizzazione dei Cluster (PIL vs Povertà)
+ggplot(dati_cluster, aes(x = pil, y = poverta, color = cluster, label = geo)) +
+  geom_point(size = 4, alpha = 0.7) +
+  geom_text_repel() +
+  theme_minimal() +
+  labs(title = "Cluster dei Paesi Europei (2022)",
+       subtitle = "Raggruppamento basato su PIL, Industria, Occupazione, Gini e Spesa Sociale",
+       x = "PIL pro capite (SPA)",
+       y = "Rischio Povertà (%)",
+       color = "Cluster") +
+  theme(plot.title = element_text(face = "bold"))
+
+# 5. Mappa dei Cluster
+mappa_cluster <- mappa_europa %>%
+  inner_join(dati_cluster, by = "geo")
+
+ggplot(data = mappa_cluster) +
+  geom_sf(aes(fill = cluster), color = "white", linewidth = 0.2) +
+  coord_sf(xlim = c(-12, 35), ylim = c(35, 70), expand = FALSE) +
+  theme_void() +
+  labs(title = "Geografia dei Cluster Socio-Economici", fill = "Gruppo")
+
 ```
 
 ```{r}
-paesi_target <- c("IT", "FR", "IE", "EL", "PT")
+#rifaccio regressioni con punti colorati per cluster
+
+
+```
+
+
+```{r}
+paesi_target <- c("IT", "FR", "NO") #Norvegia orribile ma cluster nordico ha pochissimi Paesi
 anno_inizio <- 2012
 anno_fine <- 2022
 
@@ -424,8 +469,8 @@ trend_q2 <- crea_trend(dati_storici, "occ_idx", "dis_idx",
                        "Q2 Storica: Evoluzione Occupazione vs Disuguaglianza di Reddito (2012-2022)")
 print(trend_q2)
 
-#DOMANDA 3: multipla?
-#Seppur con delle differenze legate ai singoli casi, si nota una tendenza generale in cui un aumento del peso dell'industria è associato a una diminuzione del rischio di povertà. 
+#DOMANDA 3: multipla
+ 
 ```
 
 ```{r}
