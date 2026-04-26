@@ -427,7 +427,7 @@ mappa_cluster <- mappa_europa %>%
 
 ggplot(data = mappa_cluster) +
   geom_sf(aes(fill = cluster), color = "white", linewidth = 0.2) +
-  coord_sf(xlim = c(-12, 35), ylim = c(35, 70), expand = FALSE) +
+  coord_sf(xlim = c(-12, 45), ylim = c(35, 70), expand = FALSE) +
   theme_void() +
   labs(title = "Geografia dei Cluster Socio-Economici", fill = "Gruppo")
 ```
