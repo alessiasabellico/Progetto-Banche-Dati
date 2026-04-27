@@ -7,8 +7,13 @@ Report
 
 DOMANDA 1: Quando il PIL cresce, l'occupazione aumenta?
 DOMANDA 2: Se cresce il tasso di occupazione, diminuisce la disuguaglianza di reddito? 
-DOMANDA 3: Qual è l'effetto delle differenze strutturali sul rischio di povertà? 
-(indipendenti: PIL, peso dell'industria, disuguaglianze di reddito, spesa sociale)
+DOMANDA 3: Qual è l'effetto di PIL, del peso dell'industria, di disuguaglianza e spesa sociale sul rischio di povertà?
+
+cose da fare:
+1) dati da anni 60 in poi
+2) modelli di regressione con anni come unità
+3) modelli di regressione con anni come unità e dummy per gli shock 1970 e 2008
+4) scelta 3 o 4 cluster
 
 ```{r}
 library(eurostat)
