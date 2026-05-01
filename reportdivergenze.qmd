@@ -1,6 +1,4 @@
-<<<<<<< HEAD
-
---
+---
 title: "Untitled"
 format: html
 ---
@@ -727,10 +725,3 @@ ggplot(data = mappa_corr_occ_dis) +
 ```
 
 
-=======
-Domande di ricerca da stabilire con cautela.
-dataset e pulizia.
-obbiettivi
-problemi
-cluster
->>>>>>> f1b263ac6b010e6f626a9a9044256f2cae4c5621
