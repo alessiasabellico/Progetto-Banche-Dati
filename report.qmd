@@ -7,77 +7,88 @@ Report
 
 DOMANDA 1: Quando il PIL cresce, l'occupazione aumenta?
 DOMANDA 2: Se cresce il tasso di occupazione, diminuisce la disuguaglianza di reddito? 
-DOMANDA 3: Qual è l'effetto di PIL, del peso dell'industria, di disuguaglianza e spesa sociale sul rischio di povertà?
+DOMANDA 3: Qual è l'effetto di PIL, peso dell'industria, disuguaglianza, occupazione e spesa sociale sul rischio di povertà?
 
-cose da fare:
-1) dati da anni 60 in poi
-2) modelli di regressione con anni come unità
-3) modelli di regressione con anni come unità e dummy per gli shock 1970 e 2008
-4) scelta 3 o 4 cluster
+Necessario un cambio di dataset da Eurostat per poter tornare indietro fino agli anni '60, con tutte le conseguenze che questo comporta in termini di comparabilità e omogeneità dei dati. I dati seguenti sono stati importati da World Bank.
+```{r}
+#DATASET CON WB
+#rispetto a prima, ci sono alcune differenze negli indicatori causate dal tornare fino agli anni 60. 
+# PIL pro capite: Si passa dalla Parità di Potere d'Acquisto (PPS) di Eurostat, che annullava le differenze del costo della vita tra i Paesi, ai Dollari USA costanti della Banca Mondiale, che annullano l'inflazione storica ma mantengono le differenze di costo della vita nazionali. Qui possiamo usare anche i PPP ma inziano dal 1990, mentre i Dollari costanti partono dagli anni '60.
+# Peso dell'Industria: Si passa dal calcolo del Manifatturiero puro (le fabbriche) all'Industria Totale, un aggregato più ampio della Banca Mondiale che include anche il settore delle costruzioni, l'estrazione mineraria e le reti energetiche (acqua, luce, gas).
+# Occupazione: Si passa da un target demografico chirurgico e moderno (Fascia 20-64 anni) alla metrica standard internazionale storica (Popolazione attiva dai 15 anni in su). 
+# Disuguaglianza (Gini): Si passa da un dato primario omogeneo (raccolto in contemporanea in tutta Europa tramite EU-SILC) a un dato storico armonizzato (SWIID/World Bank), che utilizza modelli statistici di imputazione per ricostruire e cucire insieme le frammentarie indagini fiscali degli anni '60 e '70.
+# Povertà: Si abbandona la Soglia relativa europea (AROP, uguale per tutto il continente) in favore delle Soglie di povertà nazionali. La misurazione non usa più un unico "metro" europeo, ma si affida ai parametri storici stabiliti dai singoli istituti di statistica nazionali (come l'ISTAT in Italia).
+# Spesa Sociale: Si passa dalla misurazione del Puro Welfare (sussidi, pensioni, aiuti diretti alle famiglie) alla misurazione del Consumo finale del Governo. Quest'ultimo valuta la "pesantezza" economica della macchina statale (includendo stipendi pubblici, esercito e giustizia), escludendo spesso i trasferimenti monetari diretti che non costituiscono "consumo". 
+library(tidyverse)
+library(eurostat)
+library(countrycode)
+
+data <- read.csv(file.choose(), 
+                     na.strings = "..", 
+                     stringsAsFactors = FALSE)
+
+dati_grezzi <- head(data, -5)
+
+indicatori_data <- dati_grezzi %>%
+  select(geo = Country.Code, Series.Code, starts_with("X")) %>%
+  pivot_longer(
+    cols = starts_with("X"), 
+    names_to = "time",
+    values_to = "valore"
+  ) %>%
+  mutate(
+    time = as.numeric(str_extract(time, "\\d{4}")),
+    valore = as.numeric(valore)
+  ) %>%
+  pivot_wider(
+    names_from = Series.Code,
+    values_from = valore
+  ) %>%
+  rename(
+    pil = NY.GDP.PCAP.KD,
+    industria = NV.IND.TOTL.ZS,
+    occupazione = SL.EMP.TOTL.SP.ZS,
+    poverta = SI.POV.NAHC,
+    spesa_sociale = NE.CON.GOVT.ZS
+  ) %>%
+  select(-SI.POV.GINI) %>% 
+  filter(time <= 2021)
+
+swiid_raw <- read.csv(file.choose(), stringsAsFactors = FALSE)
+
+gini_storico <- swiid_raw %>%
+  select(country, time = year, disuguaglianza_nuova = gini_disp) %>%
+  mutate(geo = countrycode(country, origin = "country.name", destination = "iso3c")) %>%
+  filter(!is.na(geo)) %>%
+  select(geo, time, disuguaglianza_nuova)
+
+indicatori_data <- indicatori_data %>%
+  select(-any_of("disuguaglianza")) %>%
+  left_join(gini_storico, by = c("geo", "time")) %>%
+  rename(disuguaglianza = disuguaglianza_nuova)
+```
 
 ```{r}
-library(eurostat)
-library(dplyr)
-library(ggplot2)
-library(ggrepel)
-library(scales)
-library(corrplot)
-library(rlang)
+#ANALISI DEI MISSING E DELL'INIZIO DEI DATI TEMPORALI PRESENTI (WB)
+analisi_serie_storiche <- indicatori_data %>%
+  group_by(geo) %>%
+  summarise(across(
+    c(pil, industria, occupazione, disuguaglianza, spesa_sociale, poverta),
+    ~ {
+      primo_anno <- min(time[!is.na(.)], na.rm = TRUE)
+      
+      if (is.infinite(primo_anno)) {
+        return("Assente")
+      } else {
+        n_buchi <- sum(is.na(.) & time >= primo_anno)
+        
+        return(paste0(primo_anno, " (", n_buchi, " assenti)"))
+      }
+    }
+  )) %>%
+  ungroup()
 
-# Importazione dei dati da Eurostat
-
-#PIL (Pro capite in Standard di Potere d'Acquisto per confrontabilità)
-pil_data <- get_eurostat("nama_10_pc", time_format = "date") %>%
-  filter(na_item == "B1GQ", unit =="CP_PPS_EU27_2020_HAB")
-
-# Peso dell'Industria (Valore Aggiunto del Manifatturiero in % sul totale dell'economia)
-industria_data <- get_eurostat("nama_10_a10", time_format = "date") %>%
-  filter(na_item == "B1G", nace_r2 == "C", unit == "PC_TOT")
-
-# Occupazione (Tasso percentuale sulla popolazione attiva, 20-64 anni)
-occupazione_data <- get_eurostat("lfsi_emp_a", time_format = "date") %>%
-  filter(age == "Y20-64", unit == "PC_POP", sex == "T")
-
-# Rischio di povertà o esclusione sociale - AROPE (Percentuale popolazione totale)
-povertà_data <- get_eurostat("ilc_peps01n", time_format = "date") %>%
-  filter(age == "TOTAL", unit =="PC", sex == "T")
-
-# Disuguaglianza di reddito (Coefficiente di Gini)
-disuguaglianza_data <- get_eurostat("ilc_di12", time_format = "date") %>%
-  filter(age == "TOTAL")
-
-# Spesa Sociale (Spesa per protezione sociale in % del PIL)
-spesa_sociale_data <- get_eurostat("tps00098", time_format = "date") %>%
-  filter(unit == "PC_GDP", spdeps == "TOTAL")
-
-# Funzioni di preparazione dei dati per l'analisi
-# Funzione per uniformare, estrarre l'anno e gestire le aggregazioni (es. mesi -> anni)
-prepare <- function(df, colname) {
-  # Gestione nomi colonne (Eurostat cambia spesso tra TIME_PERIOD e time)
-  if ("TIME_PERIOD" %in% names(df)) df <- rename(df, time = TIME_PERIOD)
-  if ("time_period" %in% names(df)) df <- rename(df, time = time_period)
-  if ("geo_code" %in% names(df)) df <- rename(df, geo = geo_code)
-  
-  df %>%
-    mutate(time = as.numeric(format(time, "%Y"))) %>%
-    group_by(geo, time) %>%
-    summarise(values = mean(values, na.rm = TRUE), .groups = "drop") %>%
-    rename(!!sym(colname) := values) %>%
-    filter(!is.na(!!sym(colname)))
-}
-
-# Unione dei dataset preparati in un unico dataframe per l'analisi
-list_of_dfs <- list(
-  pil = prepare(pil_data, "pil"),
-  industria = prepare(industria_data, "industria"),
-  occupazione = prepare(occupazione_data, "occupazione"),
-  disuguaglianza = prepare(disuguaglianza_data, "disuguaglianza"),
-  spesa_sociale = prepare(spesa_sociale_data, "spesa_sociale"),
-  poverta = prepare(povertà_data, "poverta")
-)
-
-# Unione sequenziale di tutti i dataset basata su Paese (geo) e Anno (time)
-indicatori_data <- Reduce(function(x, y) dplyr::full_join(x, y, by = c("geo", "time")), list_of_dfs)
+View(analisi_serie_storiche)
 ```
 
 ```{r}
@@ -85,50 +96,74 @@ library(ggplot2)
 library(dplyr)
 library(scales) 
 
-anno_analisi <- 2022
+anno_analisi <- 2021
 
 # Togliamo gli aggregati europei (EA, EU, EE) e ci concentriamo solo sui singoli Stati (geo con 2 lettere)
-dati_2022_stati <- indicatori_data %>%
+dati_anno_stati <- indicatori_data %>%
   filter(time == anno_analisi) %>%
-  filter(nchar(geo) == 2) %>%
+  filter(nchar(geo) == 3) %>% #Metto =3 perché ho codici 3 cifre (se eurostat =2)
   filter(!geo %in% c("EA", "EU", "EE"))
 
 #missing 
-dati_2022_stati %>% 
+dati_anno_stati %>% 
   summarise(across(-geo, ~sum(is.na(.))))
 
-elenco_paesi <- unique(dati_2022_stati$geo)
+elenco_paesi <- unique(dati_anno_stati$geo)
 print("--- ELENCO COMPLETO DEI PAESI ---")
 print(elenco_paesi)
 print("--- NUMERO TOTALE DI PAESI ---")
-length(elenco_paesi) #38 Paesi totali
+length(elenco_paesi) 
 
-print("--- PAESI SENZA DATO PIL (5) ---")
-dati_2022_stati %>% filter(is.na(pil)) %>% pull(geo)
+print("--- PAESI SENZA DATO PIL (1) ---")
+dati_anno_stati %>% filter(is.na(pil)) %>% pull(geo) #1 con WB (Liechtenstein)
 
 print("--- PAESI SENZA DATO INDUSTRIA (0) ---")
-dati_2022_stati %>% filter(is.na(industria)) %>% pull(geo)
+dati_anno_stati %>% filter(is.na(industria)) %>% pull(geo) #0 con WB
 
-print("--- PAESI SENZA DATO DISOCCUPAZIONE (6) ---")
-dati_2022_stati %>% filter(is.na(occupazione)) %>% pull(geo)
+print("--- PAESI SENZA DATO OCCUPAZIONE (3) ---")
+dati_anno_stati %>% filter(is.na(occupazione)) %>% pull(geo) #3 con WB (Liechtenstein, Monaco, Kosovo)
 
-print("--- PAESI SENZA DATO DISUGUAGLIANZA (6) ---")
-dati_2022_stati %>% filter(is.na(disuguaglianza)) %>% pull(geo)
+print("--- PAESI SENZA DATO DISUGUAGLIANZA (5) ---")
+dati_anno_stati %>% filter(is.na(disuguaglianza)) %>% pull(geo) #5 con WB (Monaco, Islanda, Liechtenstein, Ucraina, Kosovo)
 
-print("--- PAESI SENZA DATO SPESA SOCIALE (5) ---")
-dati_2022_stati %>% filter(is.na(spesa_sociale)) %>% pull(geo)
+print("--- PAESI SENZA DATO SPESA SOCIALE (2) ---")
+dati_anno_stati %>% filter(is.na(spesa_sociale)) %>% pull(geo) #2 con WB (Liechtenstein, Monaco)
 
-print("--- PAESI SENZA DATO POVERTÀ (6) ---")
-dati_2022_stati %>% filter(is.na(poverta)) %>% pull(geo)
+print("--- PAESI SENZA DATO POVERTÀ (8) ---")
+dati_anno_stati %>% filter(is.na(poverta)) %>% pull(geo) #8 con WB (Bosnia, Regno Unito, Croazia, Islanda, Liechtenstein,  Monaco, Ucraina, Kosovo)
 
-#Ho 5 missing per il PIL (Ucraina, Kosovo, Liechtenstein, Svizzera, Moldavia), 0 per la Produzione Industriale, 6 per Occupazione (Albania, Liechtenstein, Montenegro, Ucraina, Kosovo, Moldavia), 6 per Disuguaglianza (Bosnia ed Erzegovina, Islanda, Liechtenstein, Ucraina, Kosovo, Moldavia), 5 per spesa_sociale (Ucraina, Kosovo, Liechtenstein, Macedonia del Nord), 6 per Povertà (Bosnia ed Erzegovina, Islanda, Liechtenstein, Ucraina, Kosovo, Moldavia). 
-
-dati_2022_stati <- dati_2022_stati %>%
-  filter(!geo %in% c("UA", "LI", "XK", "MD", "BA"))
+dati_2021_stati <- dati_anno_stati %>%
+  na.omit()
 ```
 
 ```{r}
-#GRAFICI DELLE VARIABILI PER STATO NEL 2022
+#ANALISI DEI MISSING E DELL'INIZIO DEI DATI TEMPORALI PRESENTI (WB) con dataset aggiornato
+paesi_sopravvissuti <- unique(dati_2021_stati$geo)
+analisi_serie_storiche2 <- indicatori_data %>%
+  filter(geo %in% paesi_sopravvissuti) %>%
+  group_by(geo) %>%
+  summarise(across(
+    c(pil, industria, occupazione, disuguaglianza, spesa_sociale, poverta),
+    ~ {
+      primo_anno <- min(time[!is.na(.)], na.rm = TRUE)
+      
+      if (is.infinite(primo_anno)) {
+        return("Assente")
+      } else {
+        n_buchi <- sum(is.na(.) & time >= primo_anno)
+        
+        return(paste0(primo_anno, " (", n_buchi, " assenti)"))
+      }
+    }
+  )) %>%
+  ungroup()
+
+View(analisi_serie_storiche2)
+#qui ho, nei 36 paesi rimasti, l'anno da cui partono i dati per ogni indicatore e il numero di buchi (NA) presenti da quell'anno in poi fino al 2021.
+```
+
+```{r}
+#GRAFICI DELLE VARIABILI PER STATO NEL 2021
 library(ggplot2)
 library(dplyr)
 library(scales) 
@@ -151,32 +186,32 @@ crea_grafico <- function(dataframe, colonna_y, titolo_grafico, etichetta_y) {
 }
 
 # 1. PIL
-grafico_pil <- crea_grafico(dati_2022_stati, "pil", "PIL pro capite", "SPA")
+grafico_pil <- crea_grafico(dati_2021_stati, "pil", "PIL pro capite", "SPA")
 print(grafico_pil)
 #Svettano Lussemburgo, Irlanda e Norvegia, mentre chiudono la classifica Albania e Macedonia del Nord.
 
 # 2. Peso dell'industria 
-grafico_industria <- crea_grafico(dati_2022_stati, "industria", "Peso dell'Industria", "% del Valore Aggiunto Totale")
+grafico_industria <- crea_grafico(dati_2021_stati, "industria", "Peso dell'Industria", "% del Valore Aggiunto Totale")
 print(grafico_industria)
 #Svettano Irlanda, Turchia e Slovenia, mentre chiudono la classifica Cipro, Montenegro e Lussemburgo.
 
 # 3. Occupazione
-grafico_occupazione <- crea_grafico(dati_2022_stati, "occupazione", "Tasso di Occupazione (20-64 anni)", "% Popolazione Attiva")
+grafico_occupazione <- crea_grafico(dati_2021_stati, "occupazione", "Tasso di Occupazione (20-64 anni)", "% Popolazione Attiva")
 print(grafico_occupazione)
 #commento
 
 # 4. Povertà (AROPE)
-grafico_arope <- crea_grafico(dati_2022_stati, "poverta", "Rischio Povertà o Esclusione Sociale", "% Popolazione Totale")
+grafico_arope <- crea_grafico(dati_2021_stati, "poverta", "Rischio Povertà o Esclusione Sociale", "% Popolazione Totale")
 print(grafico_arope)
 #commento
 
 # 5. Disuguaglianza di reddito (Coefficiente di Gini)
-grafico_gini <- crea_grafico(dati_2022_stati, "disuguaglianza", "Coefficiente di Gini", "Indice (0-100)")
+grafico_gini <- crea_grafico(dati_2021_stati, "disuguaglianza", "Coefficiente di Gini", "Indice (0-100)")
 print(grafico_gini)
 #Commento
 
 #6. Spesa Sociale
-grafico_spesa_sociale <- crea_grafico(dati_2022_stati, "spesa_sociale", "Spesa Sociale", "% del PIL")
+grafico_spesa_sociale <- crea_grafico(dati_2021_stati, "spesa_sociale", "Spesa Sociale", "% del PIL")
 print(grafico_spesa_sociale)
 #Commento
 ```
@@ -189,10 +224,10 @@ library(ggplot2)
 library(dplyr)
 
 mappa_europa <- gisco_get_countries(resolution = "60") %>%
-  rename(geo = CNTR_ID)
+  rename(geo = ISO3_CODE)
 
-mappa_dati_2022 <- mappa_europa %>%
-  inner_join(dati_2022_stati, by = "geo")     
+mappa_dati_2021 <- mappa_europa %>%
+  inner_join(dati_2021_stati, by = "geo")     
 
 crea_mappa <- function(df_mappa, variabile, titolo, legenda) {
   ggplot(data = df_mappa) +
@@ -206,27 +241,27 @@ crea_mappa <- function(df_mappa, variabile, titolo, legenda) {
 }
 
 # Mappa 1: PIL
-mappa_pil <- crea_mappa(mappa_dati_2022, "pil", "PIL pro capite (2022)", "SPA")
+mappa_pil <- crea_mappa(mappa_dati_2021, "pil", "PIL pro capite (2021)", "SPA")
 print(mappa_pil)
 
 # Mappa 2: Peso dell'Industria
-mappa_ind <- crea_mappa(mappa_dati_2022, "industria", "Peso dell'Industria sul PIL (2022)", "% Totale")
+mappa_ind <- crea_mappa(mappa_dati_2021, "industria", "Peso dell'Industria sul PIL (2021)", "% Totale")
 print(mappa_ind)
 
 # Mappa 3: Occupazione
-mappa_occupazione <- crea_mappa(mappa_dati_2022, "occupazione", "Tasso di Occupazione (2022)", "% Attivi")
+mappa_occupazione <- crea_mappa(mappa_dati_2021, "occupazione", "Tasso di Occupazione (2021)", "% Attivi")
 print(mappa_occupazione)
 
 # Mappa 4: Rischio Povertà
-mappa_pov <- crea_mappa(mappa_dati_2022, "poverta", "Rischio Povertà o Esclusione (2022)", "% Popolazione")
+mappa_pov <- crea_mappa(mappa_dati_2021, "poverta", "Rischio Povertà o Esclusione (2021)", "% Popolazione")
 print(mappa_pov)
 
 # Mappa 5: Disuguaglianza di reddito (Gini)
-mappa_gini <- crea_mappa(mappa_dati_2022, "disuguaglianza", "Coefficiente di Gini (2022)", "Indice (0-100)")
+mappa_gini <- crea_mappa(mappa_dati_2021, "disuguaglianza", "Coefficiente di Gini (2021)", "Indice (0-100)")
 print(mappa_gini)
 
 # Mappa 6: Spesa Sociale
-mappa_spesa <- crea_mappa(mappa_dati_2022, "spesa_sociale", "Spesa Sociale (2022)", "% del PIL")
+mappa_spesa <- crea_mappa(mappa_dati_2021, "spesa_sociale", "Spesa Sociale (2021)", "% del PIL")
 print(mappa_spesa)
 ```
 
@@ -235,8 +270,8 @@ print(mappa_spesa)
 library(corrplot)
 
 # 1. PREPARAZIONE DEI DATI PER LA CORRELAZIONE
-# Prendiamo il dataset del 2022 e rimuoviamo le colonne non numeriche (geo e time)
-dati_correlazione <- dati_2022_stati %>%
+# Prendiamo il dataset del 2021 e rimuoviamo le colonne non numeriche (geo e time)
+dati_correlazione <- dati_2021_stati %>%
   select(-geo, -time)
 
 # 2. CALCOLO DELLA MATRICE DI CORRELAZIONE (Indice di Pearson)
@@ -254,10 +289,10 @@ corrplot(matrice_corr,
          col = colorRampPalette(c("#D73027", "#F46D43", "#FDAE61", "#FEE090", 
                                   "#FFFFBF", "#E0F3F8", "#ABD9E9", "#74ADD1", "#4575B4"))(200))
 
-#Domanda 1: Pil o occupazione hanno correlazione 0.37
-#Domanda 2: Occupazione e disuguaglianza hanno correlazione -0.52
-#Domanda 3: Povertà ha correlazione -0.50 con PIL, -0.19 con industria, 0.65 con disuguaglianza e -0.44 con spesa sociale.
-#Emerge poi la correlazione di 0,70 tra occupazione e arope, poiché quest'ultimo contiene già l'indicatore occupazionale al suo interno.
+#Domanda 1: Pil o occupazione hanno correlazione 0.35 (era 0.37 con eurostat).
+#Domanda 2: Occupazione e disuguaglianza hanno correlazione -0.35 (era -0.52 con eurostat).
+#Domanda 3: Povertà ha correlazione -0.25 con PIL (era -0.50 con eurostat), -0.39 con industria (era -0.19 con eurostat), 0.61 con disuguaglianza (era 0.65 con eurostat) e -0.17 con spesa (era -0.44 con eurostat)).
+#occupazione e povertà -0.30: includerla?
 
 # Calcola i p-value
 test_significativita <- cor.mtest(dati_correlazione, conf.level = 0.95)
@@ -268,13 +303,13 @@ tabella_p_values_pulita <- round(tabella_p_values, 4)
 print("MATRICE DEI P-VALUE")
 print(tabella_p_values_pulita)
 
-#Domanda 1: La correlazione tra PIL e Occupazione è significativa (p-value = 0.0411 < 0.05).
-#Domanda 2: La correlazione tra Occupazione e Disuguaglianza è altamente significativa (p-value = 0.0028 < 0.01).
-#Domanda 3: La correlazione tra Povertà e PIL è altamente significativa (p-value = 0.0036 < 0.01), la correlazione tra Povertà e Industria non è significativa (p-value = 0.2816 > 0.05), la correlazione tra Povertà e Disuguaglianza è altamente significativa (p-value = 0.0000 < 0.01), la correlazione tra Povertà e Spesa Sociale è significativa (p-value = 0.0114 < 0.05).
+#Domanda 1: La correlazione tra PIL e Occupazione è significativa (p-value = 0.0391 < 0.05).
+#Domanda 2: La correlazione tra Occupazione e Disuguaglianza è significativa (p-value = 0.0345 < 0.05).
+#Domanda 3: La correlazione tra Povertà e PIL non è significativa (p-value = ), la correlazione tra Povertà e Industria è significativa (p-value = ), la correlazione tra Povertà e Disuguaglianza è altamente significativa (p-value = 0.0000 < 0.01), la correlazione tra Povertà e Spesa Sociale non è significativa (p-value = ). 
 ```
 
 ```{r}
-#REGRESSIONI 2022 
+#REGRESSIONI 2021
 
 library(ggplot2)
 library(ggrepel)
@@ -300,44 +335,37 @@ crea_scatter <- function(df, var_x, var_y, titolo, etichetta_x, etichetta_y) {
 }
 
 # --- DOMANDA 1: Quando il PIL cresce, l'occupazione aumenta? ---
-plot_q1 <- crea_scatter(dati_2022_stati, "pil", "occupazione", 
+plot_q1 <- crea_scatter(dati_2021_stati, "pil", "occupazione", 
                         "Q1: Relazione tra PIL pro capite e Occupazione", 
                         "PIL pro capite (SPA)", "Occupazione Totale (%)")
 print(plot_q1)
-#R^2 = 0.137. La relazione è positiva ma debole.
+#R^2 = 0.137. La relazione è positiva ma debole. Da controllare questo dato.
 
 # --- DOMANDA 2: Se cresce il tasso di occupazione, diminuisce la disuguaglianza di reddito?
-plot_q2 <- crea_scatter(dati_2022_stati, "occupazione", "disuguaglianza", 
+plot_q2 <- crea_scatter(dati_2021_stati, "occupazione", "disuguaglianza", 
                         "Q2: Relazione tra Tasso di Occupazione e Disuguaglianza di Reddito", 
                         "Tasso di Occupazione (%)", "Disuguaglianza di Reddito (Gini)")
 print(plot_q2)
-#R^2 = 0.27. La relazione è negativa e moderata.
+#R^2 = 0.27. La relazione è negativa e moderata. Da controllare questo dato.
 
 # --- DOMANDA 3: Qual è l'effetto delle differenze strutturali sul rischio di povertà? (PIL, peso dell'industria, disuguaglianze di reddito, spesa sociale) 
 # Facciamo regressione lineare multipla con poverta come variabile dipendente e PIL, industria, disuguaglianza e spesa_sociale come indipendenti.
 
-dati_modello_2022 <- indicatori_data %>%
-  filter(time == 2022, nchar(geo) == 2, !geo %in% c("EA", "EU", "EE")) %>%
-  na.omit()
-modello_q3 <- lm(poverta ~ pil + industria + disuguaglianza + spesa_sociale, data = dati_2022_stati)
+modello_q3 <- lm(poverta ~ pil + industria + disuguaglianza + spesa_sociale + occupazione, data = dati_2021_stati)
 summary(modello_q3)
-
-#Per rispondere in modo esaustivo alla terza domanda di ricerca, è stato stimato un modello di regressione OLS al fine di isolare l'impatto dei singoli fattori strutturali sul tasso di rischio di povertà o esclusione sociale (AROPE). Il modello risulta altamente significativo nell'afferrare le dinamiche continentali, riuscendo a spiegare oltre il 60% della varianza totale (R-quadro = 0.604, p < 0.001). 
-#Il coefficiente di Gini si conferma il predittore più potente e statisticamente robusto (p < 0.01). Una distribuzione iniqua del reddito penalizza in modo gravissimo la tenuta sociale, agendo come moltiplicatore della povertà a prescindere dal livello di ricchezza generale.
-#Il PIL pro capite mantiene una capacità di abbattimento della povertà statisticamente significativa (p < 0.05). La spesa per la protezione sociale, pur mostrando il previsto effetto di contenimento (segno negativo), presenta nel modello multivariato una significatività solo marginale (p < 0.10). Ciò suggerisce che l'efficacia della spesa pubblica sia fortemente mediata dalla sua reale capacità di ridurre le disuguaglianze alla base (Gini).
-#Il peso del settore manifatturiero (Valore Aggiunto Industriale) risulta non significativo (p > 0.15). Sebbene l'industria possa trainare il PIL nazionale, non possiede un meccanismo intrinseco e diretto capace di arginare la povertà o l'esclusione sociale qualora manchino adeguate politiche redistributive.
+#commento
 ```
 
 ```{r}
 #Grafico riferito alla domanda 3
-dati_per_grafico <- dati_2022_stati %>%
-  select(geo, poverta, pil, industria, disuguaglianza, spesa_sociale) %>%
+dati_per_grafico <- dati_2021_stati %>%
+  select(geo, poverta, pil, industria, disuguaglianza, spesa_sociale, occupazione) %>%
   na.omit()
 
 dati_standardizzati <- dati_per_grafico %>%
-  mutate(across(c(poverta, pil, industria, disuguaglianza, spesa_sociale), ~as.numeric(scale(.))))
+  mutate(across(c(poverta, pil, industria, disuguaglianza, spesa_sociale, occupazione), ~as.numeric(scale(.))))
 
-modello_std <- lm(poverta ~ pil + industria + disuguaglianza + spesa_sociale, data = dati_standardizzati)
+modello_std <- lm(poverta ~ pil + industria + disuguaglianza + spesa_sociale + occupazione, data = dati_standardizzati)
 
 risultati_df <- as.data.frame(summary(modello_std)$coefficients)
 risultati_df$Variabile <- rownames(risultati_df)
@@ -353,6 +381,7 @@ risultati_df <- risultati_df %>%
     Variabile == "industria" ~ "2. Peso Industria",
     Variabile == "disuguaglianza" ~ "3. Disuguaglianza (Gini)",
     Variabile == "spesa_sociale" ~ "4. Spesa Sociale",
+    Variabile == "occupazione" ~ "5. Occupazione",
     TRUE ~ Variabile
   ))
 
@@ -374,34 +403,67 @@ plot_modello <- ggplot(risultati_df, aes(x = Stima, y = reorder(Variabile, Stima
 print(plot_modello)
 
 
-#disuguaglianza è il fattore più potente e significativo, seguito da PIL, di poco significativo, e spesa sociale, di poco non significativo. Il peso dell'industria non è significativo.
+#disuguaglianza e industria significativi, gli altri 3 no
 ```
 
 ```{r}
 library(factoextra)
 
-dati_cluster <- dati_2022_stati %>%
+dati_cluster <- dati_2021_stati %>%
   select(geo, pil, industria, occupazione, disuguaglianza, spesa_sociale, poverta) %>%
   na.omit()
 
 dati_scalati <- scale(dati_cluster[,-1]) 
 
-# 1. METODO DEL GOMITO (WSS - Within Sum of Squares)
-grafico_gomito <- fviz_nbclust(dati_scalati, kmeans, method = "wss") +
+set.seed(123)
+
+grafico <- fviz_nbclust(dati_scalati, kmeans, 
+                                 method = "silhouette", 
+                                 nstart = 25) +
   theme_minimal() +
-  labs(title = "Metodo del Gomito: Ricerca del K Ottimale",
-       subtitle = "Cerca il punto in cui la curva 'si spezza' formando un gomito")
-print(grafico_gomito)
+  labs(
+    title = "Analisi del Numero Ottimale di Cluster",
+    subtitle = "Il picco indica la migliore separazione tra i paesi",
+    x = "Numero di Cluster (k)",
+    y = "Larghezza media della Silhouette"
+  ) +
+  theme(plot.title = element_text(face = "bold", size = 14))
 
-# 2. INDICE DI SILHOUETTE (Metodo più preciso)
-grafico_silhouette <- fviz_nbclust(dati_scalati, kmeans, method = "silhouette") +
-  theme_minimal() +
-  labs(title = "Indice di Silhouette: Ricerca del K Ottimale",
-       subtitle = "Il picco più alto indica il numero ottimale di cluster")
-print(grafico_silhouette)
+print(grafico)
 
+#per motodo del gomito verrebbero 3 cluster
+```
 
-#Questi due metodi concordano nell'indicare che il numero ottimale di cluster per segmentare i Paesi europei sulla base degli indicatori socio-economici è 2. Tuttavia così perderemmo troppe sfumature. Per cui, usiamo 3 cluster.
+```{r}
+#Valutazione con BIC 
+library(cluster)
+
+calcola_bic <- function(modello_km, dati) {
+  k <- nrow(modello_km$centers) 
+  n <- nrow(dati)               
+  p <- ncol(dati)               
+  wss <- modello_km$tot.withinss 
+
+  return(wss + k * p * log(n))
+}
+
+set.seed(123)
+km2 <- kmeans(dati_scalati, centers = 2, nstart = 25)
+km3 <- kmeans(dati_scalati, centers = 3, nstart = 25)
+km4 <- kmeans(dati_scalati, centers = 4, nstart = 25)
+km5 <- kmeans(dati_scalati, centers = 5, nstart = 25)
+
+bic_2 <- calcola_bic(km2, dati_scalati)
+bic_3 <- calcola_bic(km3, dati_scalati)
+bic_4 <- calcola_bic(km4, dati_scalati)
+bic_5 <- calcola_bic(km5, dati_scalati)
+
+cat("Valore BIC per 2 cluster:", bic_2, "\n")
+cat("Valore BIC per 3 cluster:", bic_3, "\n")
+cat("Valore BIC per 4 cluster:", bic_4, "\n")
+cat("Valore BIC per 5 cluster:", bic_5, "\n")
+
+#BIC più basso per 4 cluster, di pochissimo sui 3.
 ```
 
 ```{r}
@@ -410,9 +472,7 @@ library(cluster)
 
 # Esecuzione K-means 
 set.seed(123) # Per rendere i risultati riproducibili
-modello_km <- kmeans(dati_scalati, centers = 3, nstart = 25)
-#qui mettendo centers = n, si ottengono n cluster senza cambiare nient'altro nel codice
-#io ne ho messi 3 ma possiamo provare con di più
+modello_km <- km4
 
 # Aggiungiamo il cluster di appartenenza al dataset originale
 dati_cluster$cluster <- as.factor(modello_km$cluster) 
@@ -437,16 +497,20 @@ ggplot(data = mappa_cluster) +
   labs(title = "Geografia dei Cluster Socio-Economici", fill = "Gruppo")
 ```
 
-L’applicazione dell’algoritmo di partizionamento K-means ha permesso di aggregare i 29 Paesi europei analizzati in tre cluster omogenei, rivelando dinamiche macroeconomiche e territoriali ben definite. Nonostante il peso dell’industria manifatturiera (circa il 16% in tutti e tre i gruppi) non risulti essere un fattore discriminante per determinare le disuguaglianze o la ricchezza, le altre variabili strutturali delineano tre “anime” distinte del continente europeo.
-Cluster 1 (Rosso): Basso PIL, Alta Disuguaglianza, Alto Rischio Povertà, Bassa Spesa Sociale.
-Questo cluster raggruppa prevalentemente l'Europa del Sud (Spagna, Italia, Grecia) e parte dell'Est e dei Balcani (Bulgaria, Romania, Croazia, Lituania, Lettonia, Estonia, Turchia).
-Dal punto di vista dei fondamentali economici, questo gruppo presenta le criticità maggiori. Il PIL pro capite medio è il più basso d'Europa (26.139 SPA), accompagnato dal tasso di occupazione più debole (72,7%). Tuttavia, il dato più allarmante riguarda la coesione sociale: a causa di una spesa per la protezione sociale contenuta (19,7% del PIL), questo cluster registra i picchi massimi sia di disuguaglianza di reddito (Gini medio a 35,0) sia di rischio di povertà o esclusione sociale, che sfiora in media il 30% (28,4%). È l'evidenza empirica che i sistemi di welfare di quest'area geografica faticano a compensare le debolezze strutturali del mercato del lavoro.
-Cluster 2 (Verde): PIL fuori scala, Occupazione alta, Spesa Sociale contenuta ma Efficace.
-Questo micro-gruppo isola tre eccezioni continentali: Irlanda, Norvegia e Lussemburgo.
-Si tratta di economie le cui dinamiche di creazione della ricchezza sono anomale rispetto al resto d'Europa (hub finanziari e tecnologici, o superpotenze energetiche). Il PIL pro capite medio è stratosferico, attestandosi a oltre 85.000 SPA, più del doppio del blocco continentale. Grazie a mercati del lavoro estremamente floridi (occupazione prossima all'80%), la disuguaglianza è tenuta sotto controllo (Gini 27,8) e il rischio di povertà è basso (18,4%). Un dato interessante è la spesa sociale, che in termini percentuali sul PIL risulta la più bassa in assoluto (17,8%): tuttavia, essendo calcolata su un PIL così immenso, il valore assoluto della protezione erogata per cittadino rimane altissimo e sufficiente a garantire la pace sociale.
-Cluster 3 (Blu): PIL solido, Pieno Impiego, Bassa Disuguaglianza, Alto Welfare.
-È il gruppo più numeroso e rappresenta la spina dorsale dell'Europa centro-settentrionale (Germania, Francia, Olanda, Scandinavia), a cui si è ormai saldata con successo gran parte dell'Europa Centrale (Polonia, Repubblica Ceca, Slovenia, Ungheria) e un'eccezione iberica virtuosa, il Portogallo.
-Questo cluster incarna il "Modello Sociale Europeo". Il PIL è solido (36.077 SPA), sostenuto da un mercato del lavoro che rasenta il pieno impiego (occupazione media al 79,9%). Il vero elemento caratterizzante è la forza dell'apparato statale: con una spesa per la protezione sociale che assorbe quasi un quarto della ricchezza nazionale (24,6%), questo blocco riesce a comprimere drasticamente i divari di reddito. Presenta, infatti, il coefficiente di Gini più basso d'Europa (27,2) e il minor rischio di povertà (17,7%).
+L’applicazione dell’algoritmo di partizionamento K-means con k=4 ha permesso di affinare notevolmente l'analisi. Questa configurazione restituisce una mappa dell'Europa molto più precisa, evidenziando quattro modelli socio-economici profondamente diversi tra loro.
+
+Cluster 1 (Rosso): La "Fabbrica d'Europa" a forte coesione sociale
+Paesi: Bielorussia, Russia, Repubblica Ceca, Ungheria, Polonia, Slovacchia, Slovenia.
+Questo cluster raggruppa il blocco dell'Europa centro-orientale e continentale. Rappresenta la vera grande novità del passaggio a 4 cluster, isolando i Paesi ex-sovietici o del blocco orientale che hanno sviluppato un modello economico particolarissimo. Dal punto di vista della ricchezza assoluta, il PIL è sotto la media europea, ma l'economia è trainata da un settore industriale fortissimo (il secondo più alto del campione), che garantisce livelli di occupazione solidi e sopra la media. La vera sorpresa è nei dati sociali: pur avendo una spesa pubblica perfettamente nella media, questo gruppo registra i livelli minimi assoluti di disuguaglianza e di rischio povertà di tutto il continente. 
+Cluster 2 (Verde): Il "Modello Sociale Europeo" maturo e terziarizzato
+Paesi: Austria, Belgio, Cipro, Danimarca, Germania, Finlandia, Francia, Lussemburgo, Paesi Bassi, Malta, Svezia.
+Questo è il blocco storico dell'Europa occidentale e settentrionale, il cuore politico ed economico dell'UE. Si tratta di economie mature e ricche (PIL alto), che hanno in gran parte de-industrializzato a favore dei servizi (l'industria ha basso peso). Il mercato del lavoro è sano, ma il vero motore di questo cluster è il welfare state. Questo gruppo presenta di gran lunga la spesa sociale più alta d'Europa. Questo imponente sforzo statale funziona esattamente come dovrebbe: agisce da scudo, mantenendo sia la disuguaglianza che il rischio di povertà a livelli molto bassi. È l'emblema delle socialdemocrazie moderne: si produce molta ricchezza (principalmente nel terziario) e lo Stato ne ridistribuisce una fetta enorme per garantire stabilità e benessere diffuso.
+Cluster 3 (Ciano): La Periferia Vulnerabile
+Paesi: Albania, Bulgaria, Estonia, Spagna, Grecia, Italia, Lituania, Lettonia, Macedonia del Nord, Montenegro, Moldavia, Portogallo, Romania, Serbia, Turchia.
+È il gruppo più ampio e problematico, che unisce l'Europa del Sud (Italia, Spagna, Grecia, Portogallo) con i Paesi baltici e la penisola balcanica. Rappresenta le aree del continente con le maggiori criticità strutturali. Il PIL è basso e il peso dell'industria è sotto la media, ma il vero tallone d'Achille è il mercato del lavoro, che registra il tasso di occupazione peggiore in assoluto. L'assenza di lavoro si traduce in una profonda frattura sociale: con una spesa pubblica debole, incapace di arginare i divari, questo cluster esplode letteralmente nei valori della disuguaglianza e, soprattutto, del rischio di povertà, che qui toccano i massimi continentali. È la fotografia di Paesi dove la ricchezza è mal distribuita e le reti di protezione sociale non riescono a compensare la mancanza di impiego.
+Cluster 4 (Viola): Le Super-Economie e gli Hub Strategici
+Paesi: Svizzera, Irlanda, Norvegia.
+Questo micro-cluster isola le tre "anomalie" statistiche del continente europeo. Si tratta di economie iper-specializzate (la finanza e la farmaceutica di precisione in Svizzera, il polo tecnologico/fiscale in Irlanda, la superpotenza energetica in Norvegia).I fondamentali economici sono letteralmente fuori scala: registrano livelli di PIL pro capite inarrivabili per il resto d'Europa, un'industria (legata a questi settori specifici) potentissima e il mercato del lavoro più dinamico del campione. La ricchezza prodotta è talmente elevata che si "infiltra" nel tessuto sociale garantendo disuguaglianza sotto la media e povertà bassissima. Il dato sulla spesa sociale, apparentemente un paradosso (il più basso di tutti), è in realtà un effetto matematico: la percentuale sul PIL destinata al welfare sembra minuscola semplicemente perché il denominatore (il PIL) è gigantesco. In termini di potere d'acquisto reale, i cittadini di questi tre Paesi godono di protezioni e ricchezza senza eguali.
 
 ```{r}
 #Visualizzazione dei Cluster 
@@ -529,11 +593,24 @@ ggplot(dati_cluster, aes(x = industria, y = poverta, color = cluster, label = ge
   theme(plot.title = element_text(face = "bold"))
 #Il cluster rosso si differenzia dagli altri due che invece si mischiano (con L'irlanda staccata).
 
+# 3e (occupazione vs povertà)
+ggplot(dati_cluster, aes(x = occupazione, y = poverta, color = cluster, label = geo)) +
+  geom_point(size = 4, alpha = 0.7) +
+  geom_text_repel() +
+  theme_minimal() +
+  labs(title = "Cluster dei Paesi Europei (2022)",
+       subtitle = "Raggruppamento basato su PIL, Industria, Occupazione, Gini e Spesa Sociale",
+       x = "Tasso di Occupazione (%)",
+       y = "Rischio Povertà (%)",
+       color = "Cluster") +
+  theme(plot.title = element_text(face = "bold"))
+#commento
+
 rownames(dati_scalati) <- dati_cluster$geo
 # 4 Grafico multi-dimensionale dei cluster (PCA)
 grafico_cluster_pca <- fviz_cluster(modello_km, data = dati_scalati,
                                     geom = c("point", "text"),
-                                    ellipse.type = "convex", 
+                                    ellipse = FALSE, 
                                     repel = TRUE,          
                                     show.clust.cent = TRUE,  
                                     ggtheme = theme_minimal(),
@@ -545,22 +622,29 @@ print(grafico_cluster_pca)
 #Rosso staccato, mentre blu e verde si mischiano, seppur con l'Irlanda sembra ben differenziata.
 ```
 
-Con 3 cluster, abbiamo i tre gruppi descritti sopra, due più grandi e uno con 3 paesi. Il problema è che la Turchia, pur essendo un caso molto particolare, è stata inserita nel cluster rosso. 
-Con 4 cluster, la Turchia si stacca da tutto il resto, ma così fa anche l'Irlanda, mentre i Norvegia e Lussemburgo si mischiano con il resto dell'Europa centro-settentrionale, perdendo il piccolo gruppo ricco verde. 
-Quindi, con 3 cluster, abbiamo 3 gruppi di numerosità diverse ma abbastanza giustificabili operativamente. Con 4, abbiamo due gruppi grandi e 2 outlier, che permettono analisi più interessanti su Irlanda e Turchia ma ci fanno perdere il cluster ricco. 
-
-
-Qui scelgo dei Paesi abbastanza casualmente: in base a quanti cluster usiamo decidiamo quali paesi usare.
+Prendiamo ora alcuni Paesi: 
+Cluster 1: Russia, Polonia, Repubblica Ceca 
+Cluster 2: Germania, Francia, Svezia
+Cluster 3: Italia, Spagna, Grecia, Estonia 
+Cluster 4: Irlanda, Svizzera
+- 
 ```{r}
-#Passiamo all'analisi dei trend temporali: prendiamo blablabla perché blablabla
-#Italia dal rosso, Germania e Belgio dal centro della figura blu, Irlanda dal verde e Turchia dal rosso. Irlanda e Turchia anche perché sono due casi estremi.
-paesi_target <- c("IT", "TR", "DE", "BE", "IE") 
-anno_inizio <- 2012
-anno_fine <- 2022
+#Passiamo all'analisi dei trend temporali: DOMANDA 1 e DOMANDA 2
+paesi_target <- c("RUS", "POL", "CZE", "DEU", "FRA", "SWE", "ITA", "ESP", "GRC", "EST", "IRL", "CHE") 
+anno_inizio <- 1991
+anno_fine <- 2021
 
-# 1. Prepariamo i dati storici
+etichette_cluster <- c(
+  "RUS" = "RUS (C1)", "POL" = "POL (C1)", "CZE" = "CZE (C1)",
+  "DEU" = "DEU (C2)", "FRA" = "FRA (C2)", "SWE" = "SWE (C2)",
+  "ITA" = "ITA (C3)", "ESP" = "ESP (C3)", "GRC" = "GRC (C3)", "EST" = "EST (C3)",
+  "IRL" = "IRL (C4)", "CHE" = "CHE (C4)"
+)
+
 dati_storici <- indicatori_data %>%
   filter(geo %in% paesi_target, time >= anno_inizio & time <= anno_fine) %>%
+  # Sostituiamo i nomi e forziamo l'ordine logico per raggruppare i cluster visivamente
+  mutate(geo = factor(geo, levels = names(etichette_cluster), labels = etichette_cluster)) %>%
   arrange(geo, time) %>%
   group_by(geo) %>%
   mutate(
@@ -568,7 +652,8 @@ dati_storici <- indicatori_data %>%
     occ_idx = (occupazione / first(na.omit(occupazione))) * 100,
     ind_idx = (industria / first(na.omit(industria))) * 100,
     pov_idx = (poverta / first(na.omit(poverta))) * 100,
-    dis_idx = (disuguaglianza / first(na.omit(disuguaglianza))) * 100
+    dis_idx = (disuguaglianza / first(na.omit(disuguaglianza))) * 100,
+    spe_idx = (spesa_sociale / first(na.omit(spesa_sociale))) * 100
   ) %>%
   ungroup()
 
@@ -583,7 +668,7 @@ crea_trend <- function(df, var1, var2, nome1, nome2, titolo) {
     facet_wrap(~ geo, scales = "free_y") +
     theme_minimal() +
     labs(title = titolo,
-         subtitle = paste("Base 100 = Anno", anno_inizio),
+         subtitle = paste("Base 100 = Anno di riferimento iniziale"),
          x = "Anno", y = "Indice (100 = Valore Iniziale)", color = "Indicatore") +
     scale_color_manual(values = c("#0072B2", "#D55E00")) + # Colori per non daltonici
     theme(plot.title = element_text(face = "bold", size = 14),
@@ -595,87 +680,66 @@ crea_trend <- function(df, var1, var2, nome1, nome2, titolo) {
 #DOMANDA 1: Quando il PIL cresce, l'occupazione aumenta?
 trend_q1 <- crea_trend(dati_storici, "pil_idx", "occ_idx", 
                        "PIL pro capite", "Occupazione", 
-                       "Q1 Storica: Evoluzione PIL vs Occupazione (2012-2022)")
+                       "Q1 Storica: Evoluzione PIL vs Occupazione (1991-2021)")
 print(trend_q1)
 #commento
 
 #DOMANDA 2: Se cresce il tasso di occupazione, diminuisce la disuguaglianza di reddito?
 trend_q2 <- crea_trend(dati_storici, "occ_idx", "dis_idx", 
                        "Occupazione", "Disuguaglianza di Reddito (Gini)", 
-                       "Q2 Storica: Evoluzione Occupazione vs Disuguaglianza di Reddito (2012-2022)")
+                       "Q2 Storica: Evoluzione Occupazione vs Disuguaglianza di Reddito (1991-2021)")
 print(trend_q2)
-#commento
-
-#DOMANDA 3: mi concentro solo su due regressori, ossia disuguaglianza e industria. Il primo perché è il più potente, il secondo perché è l'unico che non ha mostrato significatività nella regressione multipla. Verifichiamo, così, se queste due osservazioni sono valide anche nel tempo.
-trend_q3a <- crea_trend(dati_storici, "pov_idx", "dis_idx", 
-                       "Rischio Povertà (AROPE)", "Disuguaglianza (Gini)", 
-                       "Q3 Storica (A): La Povertà segue la Disuguaglianza? (2012-2022)")
-print(trend_q3a)
-#commento
-
-trend_q3b <- crea_trend(dati_storici, "pov_idx", "ind_idx", 
-                       "Rischio Povertà (AROPE)", "Peso Industria", 
-                       "Q3 Storica (B): L'illusione dell'impatto industriale (2012-2022)")
-print(trend_q3b)
-#commento
+#commento          
 ```
 
 ```{r}
 #significatività negli anni all'interno dei Paesi
-#QUESTO UMBERTO HA DETTO NO ma non capisco come dovremmo fare
-#In sostanza, la correlazione che calcolo è una correlazione tra le due variabili solo che come unità statistiche, anziché avere i Paesi, ho gli anni. Quindi, per ogni Paese, calcolo la correlazione tra PIL e Occupazione (o tra Occupazione e Disuguaglianza, o tra Povertà e Disuguaglianza) usando come unità statistica gli anni (2012-2022). In questo modo, ottengo un coefficiente di correlazione per ogni Paese che mi dice se, all'interno di quel Paese, le due variabili sono correlate nel tempo.
-#Umberto ha detto di usare il test tra due medie ma non ho capito come dovremmo fare, visto che non abbiamo due gruppi di dati ma solo una serie temporale per ogni Paese.
 
 test_trend <- function(df, var_x, var_y) {
   df %>%
     group_by(geo) %>%
     summarise(
-      correlazione = round(cor(!!sym(var_x), !!sym(var_y), use = "complete.obs"), 3),
-      p_value = round(cor.test(!!sym(var_x), !!sym(var_y))$p.value, 4),
+      n_validi = sum(!is.na(!!sym(var_x)) & !is.na(!!sym(var_y))),
+      
+      correlazione = if(n_validi >= 2) {
+        round(cor(!!sym(var_x), !!sym(var_y), use = "complete.obs"), 3)
+      } else { NA },
+      
+      p_value = if(n_validi >= 3) {
+        round(cor.test(!!sym(var_x), !!sym(var_y))$p.value, 4)
+      } else { NA },
+      
       .groups = "drop"
     ) %>%
     mutate(
       significativo = case_when(
+        is.na(p_value) ~ "Dati Insufficienti",
         p_value < 0.01 ~ "SI ***",
         p_value < 0.05 ~ "SI **",
         p_value < 0.10 ~ "Marginale *",
         TRUE ~ "NO"
       )
     ) %>%
-    arrange(p_value) # Ordina dai risultati più forti a quelli più deboli
+    arrange(p_value)
 }
 
 # 1. Test Q1: PIL vs Occupazione
-print("--- TEST Q1: PIL vs Occupazione (2012-2022) ---")
+print("--- TEST Q1: PIL vs Occupazione (1991-2021) ---")
 test_q1 <- test_trend(dati_storici, "pil", "occupazione")
 print(test_q1)
-#Altamente significativo per tutti. Correlazione positiva altissima ovunque.
+#commento
 
 # 2. Test Q2: Occupazione vs Disuguaglianza (Gini)
-print("--- TEST Q2: Occupazione vs Disuguaglianza (2012-2022) ---")
+print("--- TEST Q2: Occupazione vs Disuguaglianza (1991-2021) ---")
 test_q2 <- test_trend(dati_storici, "occupazione", "disuguaglianza")
 print(test_q2)
-#Altamente significativo in Blegio, significativo in Irlanda, non significativo in Italia, Germania e Turchia. Correlazione negativa altissima in Belgio e Irlanda, negativa ma più debole in Germania, positiva in Italia e Turchia.
-
-# 3. Test Q3A: Disuguaglianza vs Povertà (La Conferma)
-print("--- TEST Q3A: Disuguaglianza vs Povertà (2012-2022) ---")
-test_q3a <- test_trend(dati_storici, "disuguaglianza", "poverta")
-print(test_q3a)
-#Altamente significativo in Blegio, significativo in Irlanda, non significativo in Italia, Germania e Turchia. Correlazione positiva altissima in Belgio e Irlanda, positiva ma più debole in Turchia e Germania, negativa in Italia.
-
-# 4. Test Q3B: Industria vs Povertà (Il Falso Mito)
-print("--- TEST Q3B: Industria vs Povertà (2012-2022) ---")
-test_q3b <- test_trend(dati_storici, "industria", "poverta")
-print(test_q3b)
-#Non significativo in tutti i Paesi, solo marginalmente in Turchia. Correlazione negativa in Italia, Germania e Irlanda, positiva in Belgio e Turchia.
+#Tutti e tre i C2 hanno correlazione positiva (non significativa), perciò in controtendenza con il resto d'Europa.
 ```
 
 ```{r}
-#esempio possibili mappe correlazioni
-
 #1. Sincronia tra Crescita del PIL e Occupazione (Correlazione di Pearson)
 correlazioni_pil_occ <- indicatori_data %>%
-  filter(time >= 2012 & time <= 2022) %>%
+  filter(time >= 1991 & time <= 2021) %>%
   group_by(geo) %>%
   filter(sum(!is.na(pil) & !is.na(occupazione)) >= 3) %>% 
   summarise(
@@ -694,15 +758,15 @@ ggplot(data = mappa_corr_pil_occ) +
   coord_sf(xlim = c(-12, 45), ylim = c(35, 70), expand = FALSE) +
   theme_void() +
   labs(title = "Sincronia tra Crescita del PIL e Occupazione",
-       subtitle = "Correlazione di Pearson (2012-2022). Il blu indica dove il PIL traina l'occupazione.",
-       caption = "Dati: Eurostat | Serie storica 11 anni") +
+       subtitle = "Correlazione di Pearson (1991-2021). Il blu indica dove il PIL traina l'occupazione.",
+       caption = "Dati: World Bank / SWIID | Serie storica 31 anni") +
   theme(plot.title = element_text(face = "bold", size = 16),
         legend.position = "right")
 
 #2. Sincronia tra Occupazione e Disuguaglianza (Correlazione di Pearson)
 
 correlazioni_occ_dis <- indicatori_data %>%
-  filter(time >= 2012 & time <= 2022) %>%
+  filter(time >= 1991 & time <= 2021) %>%
   group_by(geo) %>%
   filter(sum(!is.na(occupazione) & !is.na(disuguaglianza)) >= 3) %>% 
   summarise(
@@ -721,12 +785,185 @@ ggplot(data = mappa_corr_occ_dis) +
   coord_sf(xlim = c(-12, 45), ylim = c(35, 70), expand = FALSE) +
   theme_void() +
   labs(title = "Sincronia tra Occupazione e Disuguaglianza di Reddito",
-       subtitle = "Correlazione di Pearson (2012-2022). Il blu indica dove l'occupazione è associata a minori disuguaglianze.",
-       caption = "Dati: Eurostat | Serie storica 11 anni") +
+       subtitle = "Correlazione di Pearson (1991-2021). Il colore rosso/arancione indica dove l'occupazione è associata a minori disuguaglianze.",
+       caption = "Dati: World Bank / SWIID | Serie storica 31 anni") +
   theme(plot.title = element_text(face = "bold", size = 16),
         legend.position = "right")
-  
-#non viene nulla di granché collegabile ai cluster
+
+#Legame tra cluster 2 e paesi a correlazione positiva.
 ```
 
+```{r}
+#Per la domanda 3, possiamo fare un'analisi di regressione panel per ogni Paese, con poverta come variabile dipendente e pil, industria, disuguaglianza, spesa_sociale e occupazione come indipendenti.
 
+library(plm)
+
+dati_panel_grezzi <- indicatori_data %>%
+  filter(geo %in% paesi_target, time >= 1990 & time <= 2021) %>%
+  select(geo, time, poverta, pil, industria, disuguaglianza, spesa_sociale, occupazione)
+
+dati_panel <- pdata.frame(dati_panel_grezzi, index = c("geo", "time"))
+
+#Stimiamo il Modello a Effetti Fissi (Fixed Effects / Within)
+modello_fe <- plm(poverta ~ pil + industria + disuguaglianza + spesa_sociale + occupazione, 
+                  data = dati_panel, 
+                  model = "within")
+
+#Stimiamo il Modello a Effetti Random (Random Effects)
+modello_re <- plm(poverta ~ pil + industria + disuguaglianza + spesa_sociale + occupazione, 
+                  data = dati_panel, 
+                  model = "random")
+
+#Eseguiamo il Test di Hausman che dice quale dei due modelli precedenti è statisticamente corretto usare
+test_hausman <- phtest(modello_fe, modello_re)
+
+cat("\n=== TEST DI HAUSMAN ===\n")
+print(test_hausman)
+#p-value > 0.05: usiamo il modello a Effetti Random (RE).
+
+cat("\n=== RISULTATI MODELLO EFFETTI RANDOM (RE) ===\n")
+summary(modello_re)
+
+#Gini ha un p-value microscopico (4.557e-10, quindi le famose ***) e un coefficiente vicinissimo a 1 (0.96). Significa che, storicamente e trasversalmente in tutta Europa, per ogni punto in più di disuguaglianza, il rischio di povertà sale quasi di un punto. È una proporzionalità diretta e devastante.
+#Il PIL non è significativo (p-value 0.57), e incredibilmente non lo è nemmeno l'occupazione (p-value 0.38). Cosa significa? Che nel lungo periodo, avere un Paese che si arricchisce o che crea posti di lavoro non riduce la povertà se quella ricchezza finisce nelle mani di pochi o se quei lavori sono precari.
+#Anche la spesa sociale perde significatività (p-value 0.50). È la prova definitiva che il welfare "riparativo" (spendere soldi pubblici) non serve a nulla per abbattere la povertà se a monte il mercato del lavoro e la struttura economica continuano a generare disuguaglianze profonde.
+#Nonostante ci sia un solo vero predittore valido, il modello nel suo complesso è validissimo (p-value del Chi-quadrato = 1.01e-11) e spiega un solidissimo 36% della varianza totale della povertà in Europa in 30 anni.
+```
+
+I risultati dell'analisi panel a effetti random (1990-2021) restituiscono un quadro netto e inequivocabile dell'evoluzione socio-economica europea. Testando simultaneamente l'impatto di ricchezza, industria, occupazione, disuguaglianza e welfare sul rischio di povertà nell'arco di trent'anni, emerge un unico predittore statisticamente significativo: il coefficiente di Gini (p < 0.001).
+
+Il modello dimostra che, nel lungo periodo, un aumento unitario della disuguaglianza si traduce in un aumento quasi simmetrico della povertà (coefficiente stimato: +0.96). Al contrario, variabili come la crescita del PIL pro capite, il livello di occupazione o il peso dell'industria perdono totalmente la loro significatività statistica.
+
+Questa evidenza sfata il mito del trickle-down economics: la semplice produzione di ricchezza o la creazione di posti di lavoro non fungono da scudo contro l'esclusione sociale se non sono accompagnati da un'equa distribuzione. Lo stesso vale per la spesa sociale, il cui impatto risulta non significativo nel lungo periodo: il welfare statale si rivela uno strumento inefficace se chiamato unicamente a rincorrere e "tamponare" una disuguaglianza strutturale crescente a monte.
+
+In sintesi, la storia dei quattro cluster europei dimostra che non esiste modello economico (dalla Fabbrica d'Europa all'Hub Finanziario, fino al Modello Sociale maturo) in grado di contenere la povertà senza prima arginare la disuguaglianza di reddito.
+
+
+
+```{r}
+#un'altra idea per la domanda 3 è ripetere regressione multipla su ogni anno, per vedere se e come cambia la significatività dei fattori nel tempo. O magari farlo su alcuni anni distanti, tipo uno a inizio anni 2000, uno 2010 circa e 2021 già lo abbiamo fatto.
+#così vedremmo se il peso dell'industria è stato più importante in passato, o se il PIL è diventato più o meno rilevante, o se la spesa sociale ha avuto un ruolo più importante in qualche fase storica.
+#si può anche pensare di ragionare sulla crisi del 2008 o anche sulla creazione dell'euro.
+
+
+#per scegliere quali anni usare, vediamo quanti dati abbiamo sulla povertà per ogni anno
+
+library(dplyr)
+library(ggplot2)
+library(broom) 
+
+
+disponibilita_poverta <- indicatori_data %>%
+  filter(geo %in% paesi_sopravvissuti, time >= 1991 & time <= 2021) %>%
+  group_by(time) %>%
+  summarise(paesi_con_dati = sum(!is.na(poverta)), .groups = "drop")
+
+grafico_disponibilita <- ggplot(disponibilita_poverta, aes(x = time, y = paesi_con_dati)) +
+  geom_line(color = "#0072B2", linewidth = 1.2) +
+  geom_point(color = "#D55E00", size = 3) +
+  geom_text(aes(label = paesi_con_dati), vjust = -1.2, size = 3.5, fontface = "bold", color = "black") +
+  scale_x_continuous(breaks = seq(1991, 2021, by = 2)) +
+  scale_y_continuous(limits = c(0, 38)) + 
+  theme_minimal() +
+  labs(title = "Disponibilità Storica dei Dati sulla Povertà (1991-2021)",
+       subtitle = "Numero di Paesi (su 36) con dati validi per anno",
+       x = "Anno",
+       y = "Numero di Paesi coperti") +
+  theme(plot.title = element_text(face = "bold", size = 14),
+        panel.grid.minor.x = element_blank())
+
+print(grafico_disponibilita)
+
+
+#L'idea è usare ora quattro anni: 
+# 2005 (L'epoca d'oro pre-crisi): Abbiamo 21 Paesi. È il momento ideale per vedere come funzionava il modello europeo prima che l'economia globale crollasse. L'industria o il PIL riducevano la povertà in quegli anni di boom?
+# 2009 (Lo shock globale): Abbiamo 24 Paesi. È l'anno in cui l'onda d'urto della crisi finanziaria americana si abbatte pesantemente sull'Europa. Vedremo se e come la spesa sociale ha fatto da scudo.
+# 2014 (L'apice dell'Austerity e della crisi dell'Eurozona): Abbiamo 24 Paesi. Il momento più buio per la periferia vulnerabile (il Cluster 3). Qui potremo capire se la disuguaglianza ha iniziato a dominare il modello proprio in risposta ai tagli strutturali.
+# 2021 (Il nuovo assetto post-pandemico): Abbiamo 36 Paesi. È la regressione già fatta.
+
+#Tuttavia, se nel 2005 facciamo una regressione su 21 Paesi (prevalentemente Europa Occidentale) e nel 2021 su 36 Paesi (includendo tutto l'Est e i Balcani), i coefficienti cambieranno inevitabilmente.
+#Cerchiamo allora di stabilire un unico set di Paesi per tutte e quattro le regressioni.
+
+anni_chiave <- c(2005, 2009, 2014, 2021)
+
+paesi_costanti <- indicatori_data %>%
+  filter(geo %in% paesi_sopravvissuti, time %in% anni_chiave) %>%
+  filter(!is.na(poverta) & !is.na(pil) & !is.na(industria) & 
+         !is.na(disuguaglianza) & !is.na(spesa_sociale) & !is.na(occupazione)) %>%
+  group_by(geo) %>%
+  summarise(anni_validi = n_distinct(time), .groups = "drop") %>%
+  filter(anni_validi == 4) %>%
+  pull(geo)
+
+print(paste("Numero di Paesi nel campione costante (Panel Bilanciato):", length(paesi_costanti)))
+print("Elenco dei Paesi:")
+print(paesi_costanti)
+
+#Rimangono 19 Paesi con dato per tutti e quattro gli anni chiave
+#6 Paesi del Cluster 1 (RUS, BLR, CZE, HUN, SVK, SVN)
+#3 Paesi del Cluster 2 (AUT, CYP, FIN)
+#10 Paesi del Cluster 3 (ESP, EST, GRC, ITA, LTU, LVA, MKD, MNE, PRT, TUR)
+#0 Paesi del Cluster 4
+
+# L'OPZIONE A (Panel Bilanciato a 19 Paesi)
+analizza_A <- function(anno_scelto) {
+  df_A <- indicatori_data %>% 
+    filter(geo %in% paesi_costanti, time == anno_scelto)
+  
+  modello <- lm(poverta ~ pil + industria + disuguaglianza + spesa_sociale + occupazione, data = df_A)
+  
+  tidy(modello) %>%
+    mutate(
+      anno = anno_scelto,
+      metodo = "A: Bilanciato (19 Paesi)",
+      significativita = case_when(p.value < 0.01 ~ "***", p.value < 0.05 ~ "**", p.value < 0.10 ~ "*", TRUE ~ "NO")
+    ) %>%
+    select(anno, metodo, term, estimate, p.value, significativita)
+}
+
+# L'OPZIONE B (Campione Massimo Disponibile per ogni anno, con numero di Paesi variabile)
+analizza_B <- function(anno_scelto) {
+  df_B <- indicatori_data %>% 
+    filter(geo %in% paesi_sopravvissuti, time == anno_scelto) %>%
+    drop_na(poverta, pil, industria, disuguaglianza, spesa_sociale, occupazione)
+  n_paesi <- nrow(df_B) 
+  modello <- lm(poverta ~ pil + industria + disuguaglianza + spesa_sociale + occupazione, data = df_B) 
+  tidy(modello) %>%
+    mutate(
+      anno = anno_scelto,
+      metodo = paste0("B: All-in (", n_paesi, " Paesi)"),
+      significativita = case_when(p.value < 0.01 ~ "***", p.value < 0.05 ~ "**", p.value < 0.10 ~ "*", TRUE ~ "NO")
+    ) %>%
+    select(anno, metodo, term, estimate, p.value, significativita)
+}
+
+risultati_A <- bind_rows(analizza_A(2005), analizza_A(2009), analizza_A(2014), analizza_A(2021))
+risultati_B <- bind_rows(analizza_B(2005), analizza_B(2009), analizza_B(2014), analizza_B(2021))
+
+tabella_comparativa <- bind_rows(risultati_A, risultati_B) %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    estimate = round(estimate, 4),
+    p.value = round(p.value, 4)
+  ) %>%
+  arrange(term, anno, metodo)
+
+View(tabella_comparativa)
+```
+
+Analisi di Sensitività Storica: Lettura dei Risultati (2005 - 2021)
+Sono stati usati due metodi: uno (A) con un panel bilanciato di 19 Paesi, l'altro (B) con il massimo numero di Paesi disponibili per ogni anno (fino a 36). La tabella comparativa mostra i coefficienti stimati, i p-value e la significatività per ogni variabile indipendente in ciascuno dei quattro anni chiave.
+
+L'Industria e l'Effetto Composizione ("Le due Europe"): i dati dimostrano matematicamente la frattura tra Europa centrale e periferica. Guardando al 2021:
+Metodo A (19 Paesi, prevalentemente Est e Sud Europa): L'industria non è significativa (p > 0.05). Nelle economie fragili o in transizione, l'elevato peso del settore manifatturiero non garantisce protezione contro la povertà.
+Metodo B (36 Paesi, con l'intero blocco Occidentale tra cui Francia e Germania): L'industria "si accende" e diventa un fattore protettivo altamente significativo (p < 0.05).
+Perciò, il manifatturiero funziona come scudo sociale globale (Metodo B), ma se si isolano le aree storicamente più vulnerabili (Metodo A), questo potere salvifico svanisce completamente.
+
+Il Dominio Assoluto della Disuguaglianza (Gini): si tratta dell'unica variabile capace di sopravvivere a ogni shock macroeconomico: dal boom del 2005, passando per la crisi Lehman (2009) e l'Austerity (2014), fino allo scenario post-pandemico (2021). Il coefficiente di Gini mantiene costantemente un'elevata significatività statistica (p < 0.05 o p < 0.01) in tutti gli anni analizzati e con entrambi i metodi di campionamento.
+
+L'Occupazione e lo Shock del 2014 (Il paradosso del lavoro): l'anno 2014 (apice della crisi dei debiti sovrani) restituisce una dicotomia cruda tra i due campioni:
+Nel Metodo B (allargato all'Occidente economicamente più solido), l'occupazione risulta significativa. Avere un lavoro, nel quadro europeo complessivo, tutelava le famiglie dal rischio povertà.
+Nel Metodo A (i 19 Paesi della periferia), l'occupazione registra una totale assenza di significatività.
+Dunque, nelle aree maggiormente esposte alla crisi, lo shock del 2014 ha svalutato strutturalmente il lavoro. L'esplosione della precarizzazione e la compressione salariale hanno consolidato la figura del working poor: in nazioni come Spagna, Grecia o Italia, mantenere l'impiego non costituiva più una garanzia sufficiente per restare al di sopra della soglia di povertà.
+
+L'Inefficacia Cronica del PIL e della Spesa Sociale: né la produzione assoluta di ricchezza (PIL pro capite), né l'intervento assistenziale (Spesa Sociale) raggiungono mai la significatività in queste quattro fotografie storiche. Il dato sulla spesa pubblica risulta particolarmente severo per l'anno 2009, momento in cui ci si aspettava che il welfare fungesse da rete di salvataggio contro il crollo finanziario.
